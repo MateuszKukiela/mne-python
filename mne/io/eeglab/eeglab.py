@@ -321,7 +321,7 @@ class RawEEGLAB(BaseRaw):
         annot = read_annotations(input_fname)
         self.set_annotations(annot)
         _check_boundary(annot, None)
-
+        self.event = eeg.event
         self._set_dig_montage_in_init(eeg_montage)
 
         latencies = np.round(annot.onset * self.info['sfreq'])
