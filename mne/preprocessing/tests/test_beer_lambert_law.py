@@ -11,7 +11,7 @@ import numpy as np
 
 from mne.datasets.testing import data_path
 from mne.io import read_raw_nirx, BaseRaw, read_raw_fif
-from mne.preprocessing import optical_density, beer_lambert_law
+from mne.preprocessing.nirs import optical_density, beer_lambert_law
 from mne.utils import _validate_type
 from mne.datasets import testing
 from mne.externals.pymatreader import read_mat
@@ -51,6 +51,28 @@ def test_beer_lambert(fname, fmt, tmpdir):
 
 
 @testing.requires_testing_data
+def test_beer_lambert_unordered_errors():
+    """NIRS data requires specific ordering and naming of channels."""
+    raw = read_raw_nirx(fname_nirx_15_0)
+    raw_od = optical_density(raw)
+    raw_od.pick([0, 1, 2])
+    with pytest.raises(ValueError, match='ordered'):
+        beer_lambert_law(raw_od)
+
+    # Test that an error is thrown if channel naming frequency doesn't match
+    # what is stored in loc[9], which should hold the light frequency too.
+    raw_od = optical_density(raw)
+    raw_od.rename_channels({'S2_D2 760': 'S2_D2 770'})
+    with pytest.raises(ValueError, match='frequency do not match'):
+        beer_lambert_law(raw_od)
+
+    # Test that an error is thrown if inconsistent frequencies used in data
+    raw_od.info['chs'][2]['loc'][9] = 770.0
+    with pytest.raises(ValueError, match='pairs with frequencies'):
+        beer_lambert_law(raw_od)
+
+
+@testing.requires_testing_data
 def test_beer_lambert_v_matlab():
     """Compare MNE results to MATLAB toolbox."""
     raw = read_raw_nirx(fname_nirx_15_0)
@@ -68,6 +90,6 @@ def test_beer_lambert_v_matlab():
                              raw._data[idx])
         assert mean_error < 0.1
         matlab_name = ("S" + str(int(matlab_data['sources'][idx])) +
-                       "-D" + str(int(matlab_data['detectors'][idx])) +
+                       "_D" + str(int(matlab_data['detectors'][idx])) +
                        " " + matlab_data['type'][idx])
         assert raw.info['ch_names'][idx] == matlab_name

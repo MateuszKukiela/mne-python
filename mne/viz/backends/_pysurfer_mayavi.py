@@ -15,9 +15,16 @@ Actual implementation of _Renderer and _Projection classes.
 #
 # License: Simplified BSD
 
+from contextlib import contextmanager
 import warnings
 import numpy as np
+
+from mayavi.core.scene import Scene
+from mayavi.core.ui.mayavi_scene import MayaviScene
+from tvtk.pyface.tvtk_scene import TVTKScene
+
 from .base_renderer import _BaseRenderer
+from ._utils import _check_color
 from ...surface import _normalize_vectors
 from ...utils import (_import_mlab, _validate_type, SilenceStdout,
                       copy_base_doc_to_subclass_doc)
@@ -57,10 +64,11 @@ class _Renderer(_BaseRenderer):
         Mayavi scene handle.
     """
 
-    def __init__(self, fig=None, size=(600, 600), bgcolor=(0., 0., 0.),
+    def __init__(self, fig=None, size=(600, 600), bgcolor='black',
                  name=None, show=False, shape=(1, 1)):
+        if bgcolor is not None:
+            bgcolor = _check_color(bgcolor)
         self.mlab = _import_mlab()
-        self.window_size = size
         self.shape = shape
         if fig is None:
             self.fig = _mlab_figure(figure=name, bgcolor=bgcolor, size=size)
@@ -68,6 +76,7 @@ class _Renderer(_BaseRenderer):
             self.fig = _mlab_figure(figure=fig, bgcolor=bgcolor, size=size)
         else:
             self.fig = fig
+        self.fig._window_size = size
         _toggle_mlab_render(self.fig, show)
 
     def subplot(self, x, y):
@@ -84,7 +93,9 @@ class _Renderer(_BaseRenderer):
 
     def mesh(self, x, y, z, triangles, color, opacity=1.0, shading=False,
              backface_culling=False, scalars=None, colormap=None,
-             vmin=None, vmax=None, **kwargs):
+             vmin=None, vmax=None, interpolate_before_map=True, **kwargs):
+        if color is not None:
+            color = _check_color(color)
         if color is not None and isinstance(color, np.ndarray) \
            and color.ndim > 1:
             if color.shape[1] == 3:
@@ -105,6 +116,7 @@ class _Renderer(_BaseRenderer):
                                                 vmin=vmin,
                                                 vmax=vmax,
                                                 **kwargs)
+
             if vertex_color is not None:
                 surface.module_manager.scalar_lut_manager.lut.table = \
                     vertex_color
@@ -122,20 +134,22 @@ class _Renderer(_BaseRenderer):
             surface.actor.property.backface_culling = backface_culling
         return surface
 
-    def contour(self, surface, scalars, contours, line_width=1.0, opacity=1.0,
+    def contour(self, surface, scalars, contours, width=1.0, opacity=1.0,
                 vmin=None, vmax=None, colormap=None,
-                normalized_colormap=False):
+                normalized_colormap=False, kind='line', color=None):
         mesh = _create_mesh_surf(surface, self.fig, scalars=scalars)
         with warnings.catch_warnings(record=True):  # traits
             cont = self.mlab.pipeline.contour_surface(
-                mesh, contours=contours, line_width=1.0, vmin=vmin, vmax=vmax,
-                opacity=opacity, figure=self.fig)
+                mesh, contours=contours, line_width=width, vmin=vmin,
+                vmax=vmax, opacity=opacity, figure=self.fig)
             cont.module_manager.scalar_lut_manager.lut.table = colormap
 
     def surface(self, surface, color=None, opacity=1.0,
                 vmin=None, vmax=None, colormap=None,
                 normalized_colormap=False, scalars=None,
                 backface_culling=False):
+        if color is not None:
+            color = _check_color(color)
         if normalized_colormap:
             colormap = colormap * 255.0
         # Make a solid surface
@@ -149,50 +163,63 @@ class _Renderer(_BaseRenderer):
             surface.actor.property.backface_culling = backface_culling
 
     def sphere(self, center, color, scale, opacity=1.0,
-               resolution=8, backface_culling=False):
-        if center.ndim == 1:
-            x = center[0]
-            y = center[1]
-            z = center[2]
-        elif center.ndim == 2:
-            x = center[:, 0]
-            y = center[:, 1]
-            z = center[:, 2]
+               resolution=8, backface_culling=False,
+               radius=None):
+        color = _check_color(color)
+        center = np.atleast_2d(center)
+        x, y, z = center.T
         surface = self.mlab.points3d(x, y, z, color=color,
                                      resolution=resolution,
                                      scale_factor=scale, opacity=opacity,
                                      figure=self.fig)
         surface.actor.property.backface_culling = backface_culling
 
-    def tube(self, origin, destination, radius=1.0, color=(1.0, 1.0, 1.0),
+    def tube(self, origin, destination, radius=0.001, color='white',
              scalars=None, vmin=None, vmax=None, colormap='RdBu',
              normalized_colormap=False, reverse_lut=False):
+        color = _check_color(color)
+        origin = np.atleast_2d(origin)
+        destination = np.atleast_2d(destination)
         if scalars is None:
-            surface = self.mlab.plot3d([origin[:, 0], destination[:, 0]],
-                                       [origin[:, 1], destination[:, 1]],
-                                       [origin[:, 2], destination[:, 2]],
-                                       tube_radius=radius,
-                                       color=color,
-                                       figure=self.fig)
+            # TODO: iterating over each tube rather than plotting in
+            #       one call may be slow.
+            #       See https://github.com/mne-tools/mne-python/issues/7644
+            for idx in range(origin.shape[0]):
+                surface = self.mlab.plot3d([origin[idx, 0],
+                                            destination[idx, 0]],
+                                           [origin[idx, 1],
+                                            destination[idx, 1]],
+                                           [origin[idx, 2],
+                                            destination[idx, 2]],
+                                           tube_radius=radius,
+                                           color=color,
+                                           figure=self.fig)
         else:
-            surface = self.mlab.plot3d([origin[:, 0], destination[:, 0]],
-                                       [origin[:, 1], destination[:, 1]],
-                                       [origin[:, 2], destination[:, 2]],
-                                       [scalars[:, 0], scalars[:, 1]],
-                                       tube_radius=radius,
-                                       vmin=vmin,
-                                       vmax=vmax,
-                                       colormap=colormap,
-                                       figure=self.fig)
+            for idx in range(origin.shape[0]):
+                surface = self.mlab.plot3d([origin[idx, 0],
+                                            destination[idx, 0]],
+                                           [origin[idx, 1],
+                                            destination[idx, 1]],
+                                           [origin[idx, 2],
+                                            destination[idx, 2]],
+                                           [scalars[idx, 0],
+                                            scalars[idx, 1]],
+                                           tube_radius=radius,
+                                           vmin=vmin,
+                                           vmax=vmax,
+                                           colormap=colormap,
+                                           figure=self.fig)
         surface.module_manager.scalar_lut_manager.reverse_lut = reverse_lut
         return surface
 
     def quiver3d(self, x, y, z, u, v, w, color, scale, mode, resolution=8,
                  glyph_height=None, glyph_center=None, glyph_resolution=None,
                  opacity=1.0, scale_mode='none', scalars=None,
-                 backface_culling=False):
+                 backface_culling=False, colormap=None, vmin=None, vmax=None,
+                 line_width=2., name=None):
+        color = _check_color(color)
         with warnings.catch_warnings(record=True):  # traits
-            if mode == 'arrow':
+            if mode in ('arrow', '2darrow', '3darrow'):
                 self.mlab.quiver3d(x, y, z, u, v, w, mode=mode,
                                    color=color, scale_factor=scale,
                                    scale_mode=scale_mode,
@@ -212,17 +239,21 @@ class _Renderer(_BaseRenderer):
                     glyph_resolution
                 quiv.actor.property.backface_culling = backface_culling
 
-    def text2d(self, x, y, text, size=14, color=(1.0, 1.0, 1.0),
+    def text2d(self, x_window, y_window, text, size=14, color='white',
                justification=None):
+        if color is not None:
+            color = _check_color(color)
         size = 14 if size is None else size
         with warnings.catch_warnings(record=True):  # traits
-            text = self.mlab.text(x, y, text, color=color, figure=self.fig)
+            text = self.mlab.text(x_window, y_window, text, color=color,
+                                  figure=self.fig)
             text.property.font_size = size
             text.actor.text_scale_mode = 'viewport'
             if isinstance(justification, str):
                 text.property.justification = justification
 
-    def text3d(self, x, y, z, text, scale, color=(1.0, 1.0, 1.0)):
+    def text3d(self, x, y, z, text, scale, color='white'):
+        color = _check_color(color)
         with warnings.catch_warnings(record=True):  # traits
             self.mlab.text3d(x, y, z, text, scale=scale, color=color,
                              figure=self.fig)
@@ -251,7 +282,7 @@ class _Renderer(_BaseRenderer):
             _toggle_mlab_render(self.fig, True)
 
     def close(self):
-        self.mlab.close(self.fig)
+        _close_3d_figure(figure=self.fig)
 
     def set_camera(self, azimuth=None, elevation=None, distance=None,
                    focalpoint=None):
@@ -259,17 +290,14 @@ class _Renderer(_BaseRenderer):
                      elevation=elevation, distance=distance,
                      focalpoint=focalpoint)
 
+    def reset_camera(self):
+        renderer = getattr(self.fig.scene, 'renderer', None)
+        if renderer is not None:
+            renderer.reset_camera()
+
     def screenshot(self, mode='rgb', filename=None):
-        from mne.viz.backends.renderer import MNE_3D_BACKEND_TEST_DATA
-        if MNE_3D_BACKEND_TEST_DATA:
-            ndim = 3 if mode == 'rgb' else 4
-            return np.zeros(tuple(self.window_size) + (ndim,), np.uint8)
-        else:
-            with warnings.catch_warnings(record=True):  # traits
-                img = self.mlab.screenshot(self.fig, mode=mode)
-                if isinstance(filename, str):
-                    _save_figure(img, filename)
-                return img
+        return _take_3d_screenshot(figure=self.fig, mode=mode,
+                                   filename=filename)
 
     def project(self, xyz, ch_names):
         xy = _3d_to_2d(self.fig, xyz)
@@ -278,11 +306,14 @@ class _Renderer(_BaseRenderer):
 
         return _Projection(xy=xy, pts=pts)
 
+    def enable_depth_peeling(self):
+        if self.fig.scene is not None:
+            self.fig.scene.renderer.use_depth_peeling = True
+
 
 def _mlab_figure(**kwargs):
     """Create a Mayavi figure using our defaults."""
-    from mayavi import mlab
-    fig = mlab.figure(**kwargs)
+    fig = _import_mlab().figure(**kwargs)
     # If using modern VTK/Mayavi, improve rendering with FXAA
     if hasattr(getattr(fig.scene, 'renderer', None), 'use_fxaa'):
         fig.scene.renderer.use_fxaa = True
@@ -319,8 +350,6 @@ def _create_mesh_surf(surf, fig=None, scalars=None, vtk_normals=True):
 
 def _3d_to_2d(fig, xyz):
     """Convert 3d points to a 2d perspective using a Mayavi Scene."""
-    from mayavi.core.scene import Scene
-
     _validate_type(fig, Scene, "fig", "Scene")
     xyz = np.column_stack([xyz, np.ones(xyz.shape[0])])
 
@@ -345,9 +374,6 @@ def _get_world_to_view_matrix(scene):
 
     This is a concatenation of the model view and perspective transforms.
     """
-    from mayavi.core.ui.mayavi_scene import MayaviScene
-    from tvtk.pyface.tvtk_scene import TVTKScene
-
     _validate_type(scene, (MayaviScene, TVTKScene), "scene",
                    "TVTKScene/MayaviScene")
     cam = scene.camera
@@ -371,9 +397,6 @@ def _get_view_to_display_matrix(scene):
     It's assumed that the view should take up the entire window and that the
     origin of the window is in the upper left corner.
     """  # noqa: E501
-    from mayavi.core.ui.mayavi_scene import MayaviScene
-    from tvtk.pyface.tvtk_scene import TVTKScene
-
     _validate_type(scene, (MayaviScene, TVTKScene), "scene",
                    "TVTKScene/MayaviScene")
 
@@ -404,16 +427,22 @@ def _set_3d_view(figure, azimuth, elevation, focalpoint, distance):
 
 def _set_3d_title(figure, title, size=40):
     from mayavi import mlab
-    text = mlab.title(text=title, figure=figure)
+    text = mlab.title(text='', figure=figure)
     text.property.vertical_justification = 'top'
     text.property.font_size = size
     mlab.draw(figure)
 
 
-def _check_figure(figure):
-    from mayavi.core.scene import Scene
-    if not isinstance(figure, Scene):
-        raise TypeError('figure must be a mayavi scene')
+def _check_3d_figure(figure):
+    try:
+        import mayavi  # noqa F401
+    except Exception:
+        raise TypeError('figure must be a mayavi scene but the'
+                        'mayavi package is not found.')
+    else:
+        from mayavi.core.scene import Scene
+        if not isinstance(figure, Scene):
+            raise TypeError('figure must be a mayavi scene.')
 
 
 def _save_figure(img, filename):
@@ -423,3 +452,40 @@ def _save_figure(img, filename):
     FigureCanvasAgg(fig)
     fig.figimage(img, resize=True)
     fig.savefig(filename)
+
+
+def _close_3d_figure(figure):
+    from mayavi import mlab
+    mlab.close(figure)
+
+
+def _take_3d_screenshot(figure, mode='rgb', filename=None):
+    from mayavi import mlab
+    from mne.viz.backends.renderer import MNE_3D_BACKEND_TESTING
+    if MNE_3D_BACKEND_TESTING:
+        ndim = 3 if mode == 'rgb' else 4
+        if figure.scene is None:
+            figure_size = figure._window_size
+        else:
+            figure_size = figure.scene._renwin.size
+        return np.zeros(tuple(figure_size) + (ndim,), np.uint8)
+    else:
+        from pyface.api import GUI
+        gui = GUI()
+        gui.process_events()
+        with warnings.catch_warnings(record=True):  # traits
+            img = mlab.screenshot(figure, mode=mode)
+        if isinstance(filename, str):
+            _save_figure(img, filename)
+        return img
+
+
+@contextmanager
+def _testing_context(interactive):
+    mlab = _import_mlab()
+    orig_backend = mlab.options.backend
+    mlab.options.backend = 'test'
+    try:
+        yield
+    finally:
+        mlab.options.backend = orig_backend
