@@ -8,14 +8,15 @@ import numpy as np
 
 from mne import (pick_channels_regexp, pick_types, Epochs,
                  read_forward_solution, rename_channels,
-                 pick_info, pick_channels, create_info)
+                 pick_info, pick_channels, create_info, make_ad_hoc_cov)
 from mne import __file__ as _root_init_fname
 from mne.io import (read_raw_fif, RawArray, read_raw_bti, read_raw_kit,
                     read_info)
 from mne.io.pick import (channel_indices_by_type, channel_type,
                          pick_types_forward, _picks_by_type, _picks_to_idx,
-                         get_channel_types, _DATA_CH_TYPES_SPLIT,
-                         _contains_ch_type)
+                         _DATA_CH_TYPES_SPLIT,
+                         _contains_ch_type, pick_channels_cov,
+                         _get_channel_types, get_channel_type_constants)
 from mne.io.constants import FIFF
 from mne.datasets import testing
 from mne.utils import run_tests_if_main, catch_logging, assert_object_equal
@@ -68,7 +69,10 @@ def _channel_type_old(info, idx):
     ch = info['chs'][idx]
 
     # iterate through all defined channel types until we find a match with ch
-    for t, rules in get_channel_types().items():
+    # go in order from most specific (most rules entries) to least specific
+    channel_types = sorted(
+        get_channel_type_constants().items(), key=lambda x: len(x[1]))[::-1]
+    for t, rules in channel_types:
         for key, vals in rules.items():  # all keys must match the values
             if ch.get(key, None) not in np.array(vals):
                 break  # not channel type t, go to next iteration
@@ -229,8 +233,8 @@ def test_pick_seeg_ecog():
     epochs = Epochs(raw, events, {'event': 0}, -1e-5, 1e-5)
     evoked = epochs.average(pick_types(epochs.info, meg=True, seeg=True))
     e_seeg = evoked.copy().pick_types(meg=False, seeg=True)
-    for l, r in zip(e_seeg.ch_names, [names[4], names[5], names[7]]):
-        assert_equal(l, r)
+    for lt, rt in zip(e_seeg.ch_names, [names[4], names[5], names[7]]):
+        assert lt == rt
     # Deal with constant debacle
     raw = read_raw_fif(op.join(io_dir, 'tests', 'data',
                                'test_chpi_raw_sss.fif'))
@@ -242,10 +246,20 @@ def test_pick_chpi():
     # Make sure we don't mis-classify cHPI channels
     info = read_info(op.join(io_dir, 'tests', 'data', 'test_chpi_raw_sss.fif'))
     _assert_channel_types(info)
-    channel_types = {channel_type(info, idx) for idx in range(info['nchan'])}
+    channel_types = _get_channel_types(info)
     assert 'chpi' in channel_types
     assert 'seeg' not in channel_types
     assert 'ecog' not in channel_types
+
+
+def test_pick_csd():
+    """Test picking current source density channels."""
+    # Make sure we don't mis-classify cHPI channels
+    names = ['MEG 2331', 'MEG 2332', 'MEG 2333', 'A1', 'A2', 'Fz']
+    types = 'mag mag grad csd csd csd'.split()
+    info = create_info(names, 1024., types)
+    picks_by_type = [('mag', [0, 1]), ('grad', [2]), ('csd', [3, 4, 5])]
+    assert_indexing(info, picks_by_type, all_data=False)
 
 
 def test_pick_bio():
@@ -505,6 +519,34 @@ def test_picks_to_idx():
     assert_array_equal(np.arange(len(info['ch_names'])),
                        _picks_to_idx(info, 'all'))
     assert_array_equal([0], _picks_to_idx(info, 'data'))
+
+
+def test_pick_channels_cov():
+    """Test picking channels from a Covariance object."""
+    info = create_info(['CH1', 'CH2', 'CH3'], 1., ch_types='eeg')
+    cov = make_ad_hoc_cov(info)
+    cov['data'] = np.array([1., 2., 3.])
+
+    cov_copy = pick_channels_cov(cov, ['CH2', 'CH1'], ordered=False, copy=True)
+    assert cov_copy.ch_names == ['CH1', 'CH2']
+    assert_array_equal(cov_copy['data'], [1., 2.])
+
+    # Test re-ordering channels
+    cov_copy = pick_channels_cov(cov, ['CH2', 'CH1'], ordered=True, copy=True)
+    assert cov_copy.ch_names == ['CH2', 'CH1']
+    assert_array_equal(cov_copy['data'], [2., 1.])
+
+    # Test picking in-place
+    pick_channels_cov(cov, ['CH2', 'CH1'], copy=False)
+    assert cov.ch_names == ['CH1', 'CH2']
+    assert_array_equal(cov['data'], [1., 2.])
+
+    # Test whether `method` and `loglik` are dropped when None
+    cov['method'] = None
+    cov['loglik'] = None
+    cov_copy = pick_channels_cov(cov, ['CH1', 'CH2'], copy=True)
+    assert 'method' not in cov_copy
+    assert 'loglik' not in cov_copy
 
 
 run_tests_if_main()

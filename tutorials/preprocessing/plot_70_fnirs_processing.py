@@ -14,12 +14,12 @@ deoxyhaemoglobin (HbR) concentration.
 
 Here we will work with the :ref:`fNIRS motor data <fnirs-motor-dataset>`.
 """
-# sphinx_gallery_thumbnail_number = 3
+# sphinx_gallery_thumbnail_number = 1
 
 import os
 import numpy as np
-from itertools import compress
 import matplotlib.pyplot as plt
+from itertools import compress
 
 import mne
 
@@ -30,20 +30,42 @@ raw_intensity = mne.io.read_raw_nirx(fnirs_raw_dir, verbose=True).load_data()
 
 
 ###############################################################################
+# View location of sensors over brain surface
+# -------------------------------------------
+#
+# Here we validate that the location of sources-detector pairs and channels
+# are in the expected locations. Source-detector pairs are shown as lines
+# between the optodes, channels (the mid point of source-detector pairs) are
+# optionally shown as orange dots. Source are optionally shown as red dots and
+# detectors as black.
+
+subjects_dir = mne.datasets.sample.data_path() + '/subjects'
+
+fig = mne.viz.create_3d_figure(size=(800, 600), bgcolor='white')
+fig = mne.viz.plot_alignment(raw_intensity.info, show_axes=True,
+                             subject='fsaverage',
+                             trans='fsaverage', surfaces=['brain'],
+                             fnirs=['channels', 'pairs',
+                                    'sources', 'detectors'],
+                             subjects_dir=subjects_dir, fig=fig)
+mne.viz.set_3d_view(figure=fig, azimuth=20, elevation=55, distance=0.6)
+
+
+###############################################################################
 # Selecting channels appropriate for detecting neural responses
 # -------------------------------------------------------------
 #
-# First we remove channels that are too close together to detect a neural
-# response. To achieve this we pick all the channels that are not considered
-# to be short (less than 1 cm distance between optodes).
+# First we remove channels that are too close together (short channels) to
+# detect a neural response (less than 1 cm distance between optodes).
+# These short channels can be seen in the figure above.
+# To achieve this we pick all the channels that are not considered to be short.
 
-is_short = mne.preprocessing.short_channels(
-    raw_intensity, threshold=0.01)
-long_channels = np.logical_not(is_short)
-raw_intensity.pick(mne.pick_channels(raw_intensity.ch_names,
-                                     list(compress(raw_intensity.ch_names,
-                                                   long_channels))))
-raw_intensity.plot(n_channels=len(raw_intensity.ch_names), duration=500)
+picks = mne.pick_types(raw_intensity.info, meg=False, fnirs=True)
+dists = mne.preprocessing.nirs.source_detector_distances(
+    raw_intensity.info, picks=picks)
+raw_intensity.pick(picks[dists > 0.01])
+raw_intensity.plot(n_channels=len(raw_intensity.ch_names),
+                   duration=500, show_scrollbars=False)
 
 
 ###############################################################################
@@ -52,8 +74,44 @@ raw_intensity.plot(n_channels=len(raw_intensity.ch_names), duration=500)
 #
 # The raw intensity values are then converted to optical density.
 
-raw_od = mne.preprocessing.optical_density(raw_intensity)
-raw_od.plot(n_channels=len(raw_od.ch_names), duration=500)
+raw_od = mne.preprocessing.nirs.optical_density(raw_intensity)
+raw_od.plot(n_channels=len(raw_od.ch_names),
+            duration=500, show_scrollbars=False)
+
+
+###############################################################################
+# Evaluating the quality of the data
+# ----------------------------------
+#
+# At this stage we can quantify the quality of the coupling
+# between the scalp and the optodes using the scalp coupling index. This
+# method looks for the presence of a prominent synchronous signal in the
+# frequency range of cardiac signals across both photodetected signals.
+#
+# In this example the data is clean and the coupling is good for all
+# channels, so we will not mark any channels as bad based on the scalp
+# coupling index.
+
+sci = mne.preprocessing.nirs.scalp_coupling_index(raw_od)
+fig, ax = plt.subplots()
+ax.hist(sci)
+ax.set(xlabel='Scalp Coupling Index', ylabel='Count', xlim=[0, 1])
+
+
+###############################################################################
+# In this example we will mark all channels with a SCI less than 0.5 as bad
+# (this dataset is quite clean, so no channels are marked as bad).
+
+raw_od.info['bads'] = list(compress(raw_od.ch_names, sci < 0.5))
+
+
+###############################################################################
+# At this stage it is appropriate to inspect your data
+# (for instructions on how to use the interactive data visualisation tool
+# see :ref:`tut-visualize-raw`)
+# to ensure that channels with poor scalp coupling have been removed.
+# If your data contains lots of artifacts you may decide to apply
+# artifact reduction techniques as described in :ref:`ex-fnirs-artifacts`.
 
 
 ###############################################################################
@@ -63,8 +121,9 @@ raw_od.plot(n_channels=len(raw_od.ch_names), duration=500)
 # Next we convert the optical density data to haemoglobin concentration using
 # the modified Beer-Lambert law.
 
-raw_haemo = mne.preprocessing.beer_lambert_law(raw_od)
-raw_haemo.plot(n_channels=len(raw_haemo.ch_names), duration=500)
+raw_haemo = mne.preprocessing.nirs.beer_lambert_law(raw_od)
+raw_haemo.plot(n_channels=len(raw_haemo.ch_names),
+               duration=500, show_scrollbars=False)
 
 
 ###############################################################################
@@ -72,9 +131,10 @@ raw_haemo.plot(n_channels=len(raw_haemo.ch_names), duration=500)
 # -------------------------------
 #
 # The haemodynamic response has frequency content predominantly below 0.5 Hz.
-# An increase in activity around 1 Hz can be seen that is due to the heart beat
-# and is unwanted. So we use a low pass filter to remove this.
-# A high pass filter is included to remove slow drifts in the data.
+# An increase in activity around 1 Hz can be seen in the data that is due to
+# the person's heart beat and is unwanted. So we use a low pass filter to
+# remove this. A high pass filter is also included to remove slow drifts
+# in the data.
 
 fig = raw_haemo.plot_psd(average=True)
 fig.suptitle('Before filtering', weight='bold', size='x-large')
@@ -149,8 +209,8 @@ epochs['Control'].plot_image(combine='mean', vmin=-30, vmax=30,
 # View consistency of responses across channels
 # ---------------------------------------------
 #
-# Similarly we can view how consistent the response was across the optode
-# pairs that we selected. All the channels in this data were located over the
+# Similarly we can view how consistent the response is across the optode
+# pairs that we selected. All the channels in this data are located over the
 # motor cortex, and all channels show a similar pattern in the data.
 
 fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(15, 6))
@@ -166,7 +226,7 @@ for column, condition in enumerate(['Control', 'Tapping']):
 # Plot standard fNIRS response image
 # ----------------------------------
 #
-# Finally we generate the most common visualisation of fNIRS data, plotting
+# Next we generate the most common visualisation of fNIRS data: plotting
 # both the HbO and HbR on the same figure to illustrate the relation between
 # the two signals.
 
@@ -184,3 +244,90 @@ styles_dict = dict(Control=dict(linestyle='dashed'))
 
 mne.viz.plot_compare_evokeds(evoked_dict, combine="mean", ci=0.95,
                              colors=color_dict, styles=styles_dict)
+
+
+###############################################################################
+# View topographic representation of activity
+# -------------------------------------------
+#
+# Next we view how the topographic activity changes throughout the response.
+
+times = np.arange(-3.5, 13.2, 3.0)
+topomap_args = dict(extrapolate='local')
+epochs['Tapping'].average(picks='hbo').plot_joint(
+    times=times, topomap_args=topomap_args)
+
+
+###############################################################################
+# Compare tapping of left and right hands
+# ---------------------------------------
+#
+# Finally we generate topo maps for the left and right conditions to view
+# the location of activity. First we visualise the HbO activity.
+
+times = np.arange(4.0, 11.0, 1.0)
+epochs['Tapping/Left'].average(picks='hbo').plot_topomap(
+    times=times, **topomap_args)
+epochs['Tapping/Right'].average(picks='hbo').plot_topomap(
+    times=times, **topomap_args)
+
+###############################################################################
+# And we also view the HbR activity for the two conditions.
+
+epochs['Tapping/Left'].average(picks='hbr').plot_topomap(
+    times=times, **topomap_args)
+epochs['Tapping/Right'].average(picks='hbr').plot_topomap(
+    times=times, **topomap_args)
+
+###############################################################################
+# And we can plot the comparison at a single time point for two conditions.
+
+fig, axes = plt.subplots(nrows=2, ncols=4, figsize=(9, 5),
+                         gridspec_kw=dict(width_ratios=[1, 1, 1, 0.1]))
+vmin, vmax, ts = -8, 8, 9.0
+
+evoked_left = epochs['Tapping/Left'].average()
+evoked_right = epochs['Tapping/Right'].average()
+
+evoked_left.plot_topomap(ch_type='hbo', times=ts, axes=axes[0, 0],
+                         vmin=vmin, vmax=vmax, colorbar=False,
+                         **topomap_args)
+evoked_left.plot_topomap(ch_type='hbr', times=ts, axes=axes[1, 0],
+                         vmin=vmin, vmax=vmax, colorbar=False,
+                         **topomap_args)
+evoked_right.plot_topomap(ch_type='hbo', times=ts, axes=axes[0, 1],
+                          vmin=vmin, vmax=vmax, colorbar=False,
+                          **topomap_args)
+evoked_right.plot_topomap(ch_type='hbr', times=ts, axes=axes[1, 1],
+                          vmin=vmin, vmax=vmax, colorbar=False,
+                          **topomap_args)
+
+evoked_diff = mne.combine_evoked([evoked_left, -evoked_right], weights='equal')
+
+evoked_diff.plot_topomap(ch_type='hbo', times=ts, axes=axes[0, 2:],
+                         vmin=vmin, vmax=vmax, colorbar=True,
+                         **topomap_args)
+evoked_diff.plot_topomap(ch_type='hbr', times=ts, axes=axes[1, 2:],
+                         vmin=vmin, vmax=vmax, colorbar=True,
+                         **topomap_args)
+
+for column, condition in enumerate(
+        ['Tapping Left', 'Tapping Right', 'Left-Right']):
+    for row, chroma in enumerate(['HbO', 'HbR']):
+        axes[row, column].set_title('{}: {}'.format(chroma, condition))
+fig.tight_layout()
+
+###############################################################################
+# Lastly, we can also look at the individual waveforms to see what is
+# driving the topographic plot above.
+
+fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(6, 4))
+mne.viz.plot_evoked_topo(epochs['Left'].average(picks='hbo'), color='b',
+                         axes=axes, legend=False)
+mne.viz.plot_evoked_topo(epochs['Right'].average(picks='hbo'), color='r',
+                         axes=axes, legend=False)
+
+# Tidy the legend
+leg_lines = [line for line in axes.lines if line.get_c() == 'b'][:1]
+leg_lines.append([line for line in axes.lines if line.get_c() == 'r'][0])
+fig.legend(leg_lines, ['Left', 'Right'], loc='lower right')

@@ -642,7 +642,7 @@ The documented structures are:
     +-------------------------------+-------+----------------------------------------------------------+
     | FIFFV_MNE_SURF_RIGHT_HEMI     | 102   | Right hemisphere cortical surface                        |
     +-------------------------------+-------+----------------------------------------------------------+
-    | FIFFV_POINT_CARDINAL          | 1     | Digitization point which is a cardinal landmark aka.     |
+    | FIFFV_POINT_CARDINAL          | 1     | Digitization point which is a cardinal landmark a.k.a.   |
     |                               |       | fiducial point                                           |
     +-------------------------------+-------+----------------------------------------------------------+
     | FIFFV_POINT_HPI               | 2     | Digitized HPI coil location                              |
@@ -1183,7 +1183,7 @@ The documented structures are:
     | eigen_leads         | double      | The matrix :math:`V`, see :ref:`mne_solution`.           |
     |                     | (:,nchan)   |                                                          |
     +---------------------+-------------+----------------------------------------------------------+
-    | eigen_fields        | double      | The matrix :math:`U^T`, see                              |
+    | eigen_fields        | double      | The matrix :math:`U^\top`, see                           |
     |                     | (nchan,     | :ref:`mne_solution`.                                     |
     |                     | nchan)      |                                                          |
     +---------------------+-------------+----------------------------------------------------------+

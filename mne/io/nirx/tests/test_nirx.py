@@ -4,6 +4,7 @@
 #          simplified BSD-3 license
 
 import os.path as op
+import shutil
 
 import pytest
 from numpy.testing import assert_allclose, assert_array_equal
@@ -13,7 +14,7 @@ from mne.io import read_raw_nirx
 from mne.io.tests.test_raw import _test_raw_reader
 from mne.transforms import apply_trans, _get_trans
 from mne.utils import run_tests_if_main
-from mne.preprocessing._beer_lambert_law import _probe_distances,\
+from mne.preprocessing.nirs import source_detector_distances,\
     short_channels
 
 fname_nirx_15_0 = op.join(data_path(download=False),
@@ -22,6 +23,17 @@ fname_nirx_15_2 = op.join(data_path(download=False),
                           'NIRx', 'nirx_15_2_recording')
 fname_nirx_15_2_short = op.join(data_path(download=False),
                                 'NIRx', 'nirx_15_2_recording_w_short')
+
+
+@requires_testing_data
+def test_nirx_hdr_load():
+    """Test reading NIRX files using path to header file."""
+    fname = fname_nirx_15_2_short + "/NIRS-2019-08-23_001.hdr"
+    raw = read_raw_nirx(fname, preload=True)
+
+    # Test data import
+    assert raw._data.shape == (26, 145)
+    assert raw.info['sfreq'] == 12.5
 
 
 @requires_testing_data
@@ -34,9 +46,13 @@ def test_nirx_15_2_short():
     assert raw.info['sfreq'] == 12.5
 
     # Test channel naming
-    assert raw.info['ch_names'][:4] == ["S1-D1 760", "S1-D1 850",
-                                        "S1-D9 760", "S1-D9 850"]
-    assert raw.info['ch_names'][24:26] == ["S5-D13 760", "S5-D13 850"]
+    assert raw.info['ch_names'][:4] == ["S1_D1 760", "S1_D1 850",
+                                        "S1_D9 760", "S1_D9 850"]
+    assert raw.info['ch_names'][24:26] == ["S5_D13 760", "S5_D13 850"]
+
+    # Test frequency encoding
+    assert raw.info['chs'][0]['loc'][9] == 760
+    assert raw.info['chs'][1]['loc'][9] == 850
 
     # Test info import
     assert raw.info['subject_info'] == dict(sex=1, first_name="MNE",
@@ -47,7 +63,7 @@ def test_nirx_15_2_short():
     # nirsite https://github.com/mne-tools/mne-testing-data/pull/51
     # step 4 figure 2
     allowed_distance_error = 0.0002
-    distances = _probe_distances(raw)
+    distances = source_detector_distances(raw.info)
     assert_allclose(distances[::2], [
         0.0304, 0.0078, 0.0310, 0.0086, 0.0416,
         0.0072, 0.0389, 0.0075, 0.0558, 0.0562,
@@ -56,11 +72,11 @@ def test_nirx_15_2_short():
     # Test which channels are short
     # These are the ones marked as red at
     # https://github.com/mne-tools/mne-testing-data/pull/51 step 4 figure 2
-    is_short = short_channels(raw)
+    is_short = short_channels(raw.info)
     assert_array_equal(is_short[:9:2], [False, True, False, True, False])
-    is_short = short_channels(raw, threshold=0.003)
+    is_short = short_channels(raw.info, threshold=0.003)
     assert_array_equal(is_short[:3:2], [False, False])
-    is_short = short_channels(raw, threshold=50)
+    is_short = short_channels(raw.info, threshold=50)
     assert_array_equal(is_short[:3:2], [True, True])
 
     # Test trigger events
@@ -110,6 +126,23 @@ def test_nirx_15_2_short():
 
 
 @requires_testing_data
+def test_encoding(tmpdir):
+    """Test NIRx encoding."""
+    fname = str(tmpdir.join('latin'))
+    shutil.copytree(fname_nirx_15_2, fname)
+    hdr_fname = op.join(fname, 'NIRS-2019-10-02_003.hdr')
+    hdr = list()
+    with open(hdr_fname, 'rb') as fid:
+        hdr.extend(line for line in fid)
+    hdr[2] = b'Date="jeu. 13 f\xe9vr. 2020"\r\n'
+    with open(hdr_fname, 'wb') as fid:
+        for line in hdr:
+            fid.write(line)
+    # smoke test
+    read_raw_nirx(fname)
+
+
+@requires_testing_data
 def test_nirx_15_2():
     """Test reading NIRX files."""
     raw = read_raw_nirx(fname_nirx_15_2, preload=True)
@@ -119,8 +152,8 @@ def test_nirx_15_2():
     assert raw.info['sfreq'] == 3.90625
 
     # Test channel naming
-    assert raw.info['ch_names'][:4] == ["S1-D1 760", "S1-D1 850",
-                                        "S1-D10 760", "S1-D10 850"]
+    assert raw.info['ch_names'][:4] == ["S1_D1 760", "S1_D1 850",
+                                        "S1_D10 760", "S1_D10 850"]
 
     # Test info import
     assert raw.info['subject_info'] == dict(sex=1, first_name="TestRecording")
@@ -153,12 +186,12 @@ def test_nirx_15_0():
     assert raw.info['sfreq'] == 6.25
 
     # Test channel naming
-    assert raw.info['ch_names'][:12] == ["S1-D1 760", "S1-D1 850",
-                                         "S2-D2 760", "S2-D2 850",
-                                         "S3-D3 760", "S3-D3 850",
-                                         "S4-D4 760", "S4-D4 850",
-                                         "S5-D5 760", "S5-D5 850",
-                                         "S6-D6 760", "S6-D6 850"]
+    assert raw.info['ch_names'][:12] == ["S1_D1 760", "S1_D1 850",
+                                         "S2_D2 760", "S2_D2 850",
+                                         "S3_D3 760", "S3_D3 850",
+                                         "S4_D4 760", "S4_D4 850",
+                                         "S5_D5 760", "S5_D5 850",
+                                         "S6_D6 760", "S6_D6 850"]
 
     # Test info import
     assert raw.info['subject_info'] == {'first_name': 'NIRX',
@@ -183,7 +216,7 @@ def test_nirx_15_0():
 
     # Test distance between optodes matches values from
     allowed_distance_error = 0.0002
-    distances = _probe_distances(raw)
+    distances = source_detector_distances(raw.info)
     assert_allclose(distances[::2], [
         0.0301, 0.0315, 0.0343, 0.0368, 0.0408,
         0.0399, 0.0393, 0.0367, 0.0336, 0.0447], atol=allowed_distance_error)

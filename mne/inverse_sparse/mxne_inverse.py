@@ -6,9 +6,7 @@
 import numpy as np
 from scipy import linalg
 
-from ..source_estimate import (SourceEstimate, VolSourceEstimate,
-                               VectorSourceEstimate, VolVectorSourceEstimate,
-                               _BaseSourceEstimate)
+from ..source_estimate import SourceEstimate, _BaseSourceEstimate, _make_stc
 from ..minimum_norm.inverse import (combine_xyz, _prepare_forward,
                                     _check_reference)
 from ..forward import is_fixed_orient
@@ -18,7 +16,8 @@ from ..utils import logger, verbose, _check_depth, _check_option, sum_squared
 from ..dipole import Dipole
 
 from .mxne_optim import (mixed_norm_solver, iterative_mixed_norm_solver, _Phi,
-                         norm_l2inf, tf_mixed_norm_solver, norm_epsilon_inf)
+                         tf_mixed_norm_solver, iterative_tf_mixed_norm_solver,
+                         norm_l2inf, norm_epsilon_inf)
 
 
 def _check_ori(pick_ori, forward):
@@ -29,7 +28,6 @@ def _check_ori(pick_ori, forward):
                          'orientation forward solution.')
 
 
-@verbose
 def _prepare_weights(forward, gain, source_weighting, weights, weights_min):
     mask = None
     if isinstance(weights, _BaseSourceEstimate):
@@ -112,12 +110,15 @@ def _compute_residual(forward, evoked, X, active_set, info):
 @verbose
 def _make_sparse_stc(X, active_set, forward, tmin, tstep,
                      active_is_idx=False, pick_ori=None, verbose=None):
+    source_nn = forward['source_nn']
+    vector = False
     if not is_fixed_orient(forward):
-        if pick_ori == 'vector':
-            X = X.reshape((-1, 3, X.shape[-1]))
-        else:
+        if pick_ori != 'vector':
             logger.info('combining the current components...')
             X = combine_xyz(X)
+        else:
+            vector = True
+            source_nn = np.reshape(source_nn, (-1, 3, 3))
 
     if not active_is_idx:
         active_idx = np.where(active_set)[0]
@@ -129,31 +130,20 @@ def _make_sparse_stc(X, active_set, forward, tmin, tstep,
         active_idx = np.unique(active_idx // n_dip_per_pos)
 
     src = forward['src']
-
-    if src.kind != 'surface':
-        vertices = src[0]['vertno'][active_idx]
-        if pick_ori == 'vector':
-            stc = VolVectorSourceEstimate(X, vertices, tmin, tstep)
-        else:
-            stc = VolSourceEstimate(X, vertices, tmin, tstep)
-    else:
-        vertices = []
-        n_points_so_far = 0
-        for this_src in src:
-            this_n_points_so_far = n_points_so_far + len(this_src['vertno'])
-            this_active_idx = active_idx[(n_points_so_far <= active_idx) &
-                                         (active_idx < this_n_points_so_far)]
-            this_active_idx -= n_points_so_far
-            this_vertno = this_src['vertno'][this_active_idx]
-            n_points_so_far = this_n_points_so_far
-            vertices.append(this_vertno)
-
-        if pick_ori == 'vector':
-            stc = VectorSourceEstimate(X, vertices, tmin, tstep)
-        else:
-            stc = SourceEstimate(X, vertices, tmin, tstep)
-
-    return stc
+    vertices = []
+    n_points_so_far = 0
+    for this_src in src:
+        this_n_points_so_far = n_points_so_far + len(this_src['vertno'])
+        this_active_idx = active_idx[(n_points_so_far <= active_idx) &
+                                     (active_idx < this_n_points_so_far)]
+        this_active_idx -= n_points_so_far
+        this_vertno = this_src['vertno'][this_active_idx]
+        n_points_so_far = this_n_points_so_far
+        vertices.append(this_vertno)
+    source_nn = source_nn[active_idx]
+    return _make_stc(
+        X, vertices, src.kind, tmin, tstep, src[0]['subject_his_id'],
+        vector=vector, source_nn=source_nn)
 
 
 @verbose
@@ -318,7 +308,7 @@ def mixed_norm(evoked, forward, noise_cov, alpha, loose='auto', depth=0.8,
     %(rank_None)s
 
         .. versionadded:: 0.18
-    %(pick_ori-vec)s
+    %(pick_ori)s
     %(verbose)s
 
     Returns
@@ -483,9 +473,9 @@ def tf_mixed_norm(evoked, forward, noise_cov,
                   loose='auto', depth=0.8, maxit=3000,
                   tol=1e-4, weights=None, weights_min=0., pca=True,
                   debias=True, wsize=64, tstep=4, window=0.02,
-                  return_residual=False, return_as_dipoles=False,
-                  alpha=None, l1_ratio=None, dgap_freq=10, rank=None,
-                  pick_ori=None, verbose=None):
+                  return_residual=False, return_as_dipoles=False, alpha=None,
+                  l1_ratio=None, dgap_freq=10, rank=None, pick_ori=None,
+                  n_tfmxne_iter=1, verbose=None):
     """Time-Frequency Mixed-norm estimate (TF-MxNE).
 
     Compute L1/L2 + L1 mixed-norm solution on time-frequency
@@ -550,13 +540,15 @@ def tf_mixed_norm(evoked, forward, noise_cov,
         Proportion of temporal regularization.
         If l1_ratio and alpha are not None, alpha_space and alpha_time are
         overridden by alpha * alpha_max * (1. - l1_ratio) and alpha * alpha_max
-        * l1_ratio. 0 means no time regularization aka MxNE.
+        * l1_ratio. 0 means no time regularization a.k.a. MxNE.
     dgap_freq : int or np.inf
         The duality gap is evaluated every dgap_freq iterations.
     %(rank_None)s
 
         .. versionadded:: 0.18
-    %(pick_ori-vec)s
+    %(pick_ori)s
+    n_tfmxne_iter : int
+        Number of TF-MxNE iterations. If > 1, iterative reweighting is applied.
     %(verbose)s
 
     Returns
@@ -607,6 +599,10 @@ def tf_mixed_norm(evoked, forward, noise_cov,
     alpha_space = alpha * (1. - l1_ratio)
     alpha_time = alpha * l1_ratio
 
+    if n_tfmxne_iter < 1:
+        raise ValueError('TF-MxNE has to be computed at least 1 time. '
+                         'Requires n_tfmxne_iter >= 1, got %s' % n_tfmxne_iter)
+
     if dgap_freq <= 0.:
         raise ValueError('dgap_freq must be a positive integer.'
                          ' Got dgap_freq = %s' % dgap_freq)
@@ -622,6 +618,7 @@ def tf_mixed_norm(evoked, forward, noise_cov,
         forward, evoked.info, noise_cov, pca, depth, loose, rank,
         weights, weights_min)
     _check_ori(pick_ori, forward)
+
     n_dip_per_pos = 1 if is_fixed_orient(forward) else 3
 
     if window is not None:
@@ -646,10 +643,16 @@ def tf_mixed_norm(evoked, forward, noise_cov,
     gain /= alpha_max
     source_weighting /= alpha_max
 
-    X, active_set, E = tf_mixed_norm_solver(
-        M, gain, alpha_space, alpha_time, wsize=wsize, tstep=tstep,
-        maxit=maxit, tol=tol, verbose=verbose, n_orient=n_dip_per_pos,
-        dgap_freq=dgap_freq, debias=debias)
+    if n_tfmxne_iter == 1:
+        X, active_set, E = tf_mixed_norm_solver(
+            M, gain, alpha_space, alpha_time, wsize=wsize, tstep=tstep,
+            maxit=maxit, tol=tol, verbose=verbose, n_orient=n_dip_per_pos,
+            dgap_freq=dgap_freq, debias=debias)
+    else:
+        X, active_set, E = iterative_tf_mixed_norm_solver(
+            M, gain, alpha_space, alpha_time, wsize=wsize, tstep=tstep,
+            n_tfmxne_iter=n_tfmxne_iter, maxit=maxit, tol=tol, verbose=verbose,
+            n_orient=n_dip_per_pos, dgap_freq=dgap_freq, debias=debias)
 
     if active_set.sum() == 0:
         raise Exception("No active dipoles found. "

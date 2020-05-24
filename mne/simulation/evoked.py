@@ -42,9 +42,7 @@ def simulate_evoked(fwd, stc, info, cov, nave=30, iir_filter=None,
     iir_filter : None | array
         IIR filter coefficients (denominator) e.g. [1, -1, 0.2].
     %(random_state)s
-    use_cps : bool (default True)
-        Whether to use cortical patch statistics to define normal
-        orientations when converting to fixed orientation (if necessary).
+    %(use_cps)s
 
         .. versionadded:: 0.15
     %(verbose)s
@@ -140,6 +138,7 @@ def _add_noise(inst, cov, iir_filter, random_state, allow_subselection=True):
         data = data[np.newaxis]
     # Subselect if necessary
     info = inst.info
+    info._check_consistency()
     picks = gen_picks = slice(None)
     if allow_subselection:
         use_chs = list(set(info['ch_names']) & set(cov['names']))
@@ -147,6 +146,8 @@ def _add_noise(inst, cov, iir_filter, random_state, allow_subselection=True):
         logger.info('Adding noise to %d/%d channels (%d channels in cov)'
                     % (len(picks), len(info['chs']), len(cov['names'])))
         info = pick_info(inst.info, picks)
+        info._check_consistency()
+
         gen_picks = np.arange(info['nchan'])
     for epoch in data:
         epoch[picks] += _generate_noise(info, cov, iir_filter, random_state,
