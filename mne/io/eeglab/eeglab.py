@@ -9,13 +9,11 @@ import os.path as op
 import numpy as np
 
 from ..utils import _read_segments_file, _find_channels
-from ..utils import _deprecate_montage
 from ..constants import FIFF
 from ..meas_info import create_info
 from ..base import BaseRaw
 from ...utils import logger, verbose, warn, fill_doc, Bunch
-from ...channels import make_dig_montage, make_standard_montage
-from ...channels.channels import DEPRECATED_PARAM
+from ...channels import make_dig_montage
 from ...epochs import BaseEpochs
 from ...event import read_events
 from ...annotations import Annotations, read_annotations
